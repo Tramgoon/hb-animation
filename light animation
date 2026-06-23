@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbour Surface — Embed</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  /* ====== The background lives in this wrapper. Put your own content on top. ====== */
+  .harbour-surface { position: relative; width: 100%; height: 100vh; overflow: hidden; }
+  .harbour-surface > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .harbour-surface > .vignette { position: absolute; inset: 0; pointer-events: none; }
+
+  /* demo content on top — delete in production */
+  .demo-content { position: relative; z-index: 2; height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; pointer-events: none;
+    font-family: Georgia, 'Times New Roman', serif; color: #123A4F; }
+  .demo-content .mark { font-size: 13px; letter-spacing: .34em; text-transform: uppercase; color: #3F8FBB;
+    font-family: system-ui, sans-serif; margin-bottom: 18px; }
+  .demo-content h1 { font-size: 56px; font-weight: 400; margin: 0; }
+  .demo-content h1 em { color: #1B5273; }
+</style>
+</head>
+<body>
+
+<!--
+  ============================================================================
+  HARBOUR SURFACE — animated background, drop-in embed
+  ============================================================================
+  USAGE
+  1. Copy the .harbour-surface <div> and the <script> below into your page.
+  2. Position your own content over it with `position: relative; z-index: 1+`.
+  3. Configure via data-* attributes on the wrapper:
+        data-ground   "light" | "marine"     (default "light")
+        data-density  5-28    contour lines   (default 13)
+        data-motes    0-120   data motes      (default 22)
+        data-speed    0.2-2.5                 (default 1)
+        data-readouts "true" | "false"  show scrambling code (default true)
+        data-code-opacity 0-1   code label opacity   (default 0.85)
+  4. For a click-through background (content sits on top and stays clickable),
+     the canvas already has pointer-events none via the wrapper rules if you
+     add `.harbour-surface { pointer-events: none; }`.
+
+  REACT: drop the markup in JSX, move the <script> body into a useEffect that
+  calls HarbourSurface.mount(ref.current), and call the returned .destroy() on
+  cleanup. WEBFLOW / FRAMER / SQUARESPACE: paste this whole file into a custom
+  HTML / embed block.
+  ============================================================================
+-->
+
+<div class="harbour-surface"
+     data-ground="light"
+     data-density="13"
+     data-motes="22"
+     data-speed="1"
+     data-readouts="true"
+     data-code-opacity="0.85">
+  <canvas></canvas>
+  <div class="vignette"></div>
+</div>
+
+<!-- demo overlay — remove in production -->
+<div class="demo-content">
+  <div class="mark">Private Intelligence Infrastructure</div>
+  <h1>Your data never <em>leaves the harbour.</em></h1>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var HarbourSurface = {
+    mount: function (wrap) {
+      var canvas = wrap.querySelector("canvas");
+      var vignette = wrap.querySelector(".vignette");
+      var ctx = canvas.getContext("2d");
+
+      function num(name, def) { var v = parseFloat(wrap.getAttribute(name)); return isNaN(v) ? def : v; }
+      function opts() {
+        var marine = (wrap.getAttribute("data-ground") === "marine");
+        return {
+          marine: marine,
+          density: Math.max(5, Math.min(28, num("data-density", 13))),
+          motes: Math.max(0, Math.min(120, num("data-motes", 22))),
+          speed: num("data-speed", 1),
+          readouts: wrap.getAttribute("data-readouts") !== "false",
+          codeOpacity: num("data-code-opacity", 0.85)
+        };
+      }
+
+      // ground + vignette react to the theme
+      function paintGround() {
+        var marine = (wrap.getAttribute("data-ground") === "marine");
+        wrap.style.background = marine
+          ? "linear-gradient(165deg,#103E58 0%,#0C374E 55%,#0A2E42 100%)"
+          : "linear-gradient(165deg,#FFFFFF 0%,#EAF4FA 50%,#D2E7F4 100%)";
+        vignette.style.boxShadow = "inset 0 0 160px " +
+          (marine ? "rgba(6,28,40,0.55)" : "rgba(120,160,185,0.18)");
+      }
+
+      function lerp(a, b, t) {
+        return [Math.round(a[0]+(b[0]-a[0])*t), Math.round(a[1]+(b[1]-a[1])*t), Math.round(a[2]+(b[2]-a[2])*t)];
+      }
+
+      function scramble(i, t) {
+        var set = "0123456789ABCDEF<>/\\{}#*+=:.";
+        var len = 5 + (i % 4);
+        var rate = 5 + (i % 4) * 2;
+        var step = Math.floor(t * rate);
+        var s = "";
+        for (var j = 0; j < len; j++) {
+          var hash = ((i * 73856093) ^ (j * 19349663) ^ ((step + j) * 83492791)) >>> 0;
+          s += set[hash % set.length];
+        }
+        return s;
+      }
+
+      function fit() {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var w = canvas.clientWidth, h = canvas.clientHeight;
+        if (!w || !h) return null;
+        if (canvas.width !== Math.round(w*dpr) || canvas.height !== Math.round(h*dpr)) {
+          canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr);
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return { w: w, h: h };
+      }
+
+      function draw(tRaw) {
+        var f = fit(); if (!f) return;
+        var w = f.w, h = f.h; ctx.clearRect(0, 0, w, h);
+        var o = opts();
+        var speed = o.speed, t = tRaw * speed, lines = o.density;
+
+        var shallow = o.marine ? [166,208,232] : [159,201,226];
+        var deep    = o.marine ? [95,168,208]  : [15,62,87];
+        var gridA   = o.marine ? 0.10 : 0.06;
+
+        ctx.strokeStyle = "rgba(95,168,208," + gridA + ")"; ctx.lineWidth = 1;
+        for (var gx = 0; gx <= w; gx += 72) { ctx.beginPath(); ctx.moveTo(gx,0); ctx.lineTo(gx,h); ctx.stroke(); }
+        for (var gy = 0; gy <= h; gy += 72) { ctx.beginPath(); ctx.moveTo(0,gy); ctx.lineTo(w,gy); ctx.stroke(); }
+
+        var k = (Math.PI * 2) / (w * 0.8);
+        function lineY(li, x) {
+          var fr = li / (lines - 1);
+          var yB = h * (0.08 + fr * 0.88);
+          var amp = (10 + fr*18) + (4 + fr*5) * Math.sin(t*0.32 + li*0.55);
+          var ph = t*0.5 + li*0.62;
+          return yB + amp*Math.sin(k*x+ph) + amp*0.36*Math.sin(k*2.1*x - ph*0.7);
+        }
+
+        for (var i = 0; i < lines; i++) {
+          var fr = i / (lines - 1);
+          var col = lerp(shallow, deep, fr);
+          var baseA = o.marine ? (0.30 + 0.4*(1-fr)) : (0.20 + 0.45*fr);
+          ctx.strokeStyle = "rgba(" + col[0] + "," + col[1] + "," + col[2] + "," + baseA.toFixed(3) + ")";
+          ctx.lineWidth = 1 + fr*0.4; ctx.beginPath();
+          for (var x = -4; x <= w + 4; x += 5) {
+            var y = lineY(i, x);
+            x === -4 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+
+        var accent    = o.marine ? "166,208,232" : "76,159,203";
+        var moteFill  = o.marine ? "#CFEAF7" : "#0F3E57";
+        var labelFill = o.marine ? "#CFE6F3" : "#1B5273";
+        function edgeFade(fr) { return Math.min(1, fr/0.05, (1-fr)/0.05); }
+
+        for (var m = 0; m < o.motes; m++) {
+          var li = m % lines;
+          var dir = (li % 2 === 0) ? 1 : -1;
+          var sp = 0.018 + (m % 6) * 0.006;
+          var offv = (m * 0.61803398875) % 1;
+          var frac = ((t * sp * speed * dir) + offv) % 1; if (frac < 0) frac += 1;
+          var mx = frac * w, my = lineY(li, mx);
+          var ef = edgeFade(frac); if (ef <= 0.01) continue;
+          var pulse = 0.5 + 0.5 * Math.sin(t*3 + m);
+
+          var trail = 7, gap = 9 * dir;
+          for (var s = trail; s >= 1; s--) {
+            var tx = mx - gap*s; if (tx < -10 || tx > w+10) continue;
+            var ty = lineY(li, tx);
+            var a = ef * 0.22 * (1 - s/(trail+1));
+            ctx.beginPath(); ctx.arc(tx, ty, 1.6, 0, 6.2832);
+            ctx.fillStyle = "rgba(" + accent + "," + a.toFixed(3) + ")"; ctx.fill();
+          }
+          ctx.beginPath(); ctx.arc(mx, my, 4 + pulse*3, 0, 6.2832);
+          ctx.fillStyle = "rgba(" + accent + "," + (ef*0.18).toFixed(3) + ")"; ctx.fill();
+          ctx.beginPath(); ctx.arc(mx, my, 2.1 + pulse*0.7, 0, 6.2832);
+          ctx.globalAlpha = ef; ctx.fillStyle = moteFill; ctx.fill(); ctx.globalAlpha = 1;
+
+          if (o.readouts) {
+            var lf = ef * (0.55 + 0.35*Math.sin(t*0.5 + m*1.3)) * o.codeOpacity;
+            if (lf > 0.04) {
+              var up = (li % 3 !== 0);
+              var ly = up ? my - 13 : my + 13;
+              var str = scramble(m, t);
+              ctx.globalAlpha = lf;
+              ctx.strokeStyle = "rgba(" + accent + ",0.7)"; ctx.lineWidth = 1;
+              ctx.beginPath(); ctx.moveTo(mx + 6*dir, my); ctx.lineTo(mx + 16*dir, ly); ctx.lineTo(mx + 24*dir, ly); ctx.stroke();
+              ctx.font = "600 10px 'SF Mono','Roboto Mono',ui-monospace,'Courier New',monospace";
+              ctx.fillStyle = labelFill;
+              ctx.textAlign = dir > 0 ? "left" : "right";
+              ctx.fillText(str, mx + 28*dir, ly + 3.5);
+              ctx.textAlign = "start"; ctx.globalAlpha = 1;
+            }
+          }
+        }
+      }
+
+      paintGround();
+      var t0 = performance.now(), raf = 0, running = true;
+      function loop(ts) { if (!running) return; draw((ts - t0) / 1000); raf = requestAnimationFrame(loop); }
+      raf = requestAnimationFrame(loop);
+
+      // pause when off-screen to save battery
+      var io = null;
+      if ("IntersectionObserver" in window) {
+        io = new IntersectionObserver(function (ents) {
+          ents.forEach(function (e) {
+            if (e.isIntersecting && !running) { running = true; t0 = performance.now() - 0; raf = requestAnimationFrame(loop); }
+            else if (!e.isIntersecting && running) { running = false; cancelAnimationFrame(raf); }
+          });
+        });
+        io.observe(wrap);
+      }
+
+      return {
+        destroy: function () { running = false; cancelAnimationFrame(raf); if (io) io.disconnect(); },
+        refresh: paintGround
+      };
+    }
+  };
+
+  window.HarbourSurface = HarbourSurface;
+  // auto-mount every .harbour-surface on the page
+  document.querySelectorAll(".harbour-surface").forEach(function (el) { HarbourSurface.mount(el); });
+})();
+</script>
+</body>
+</html>
